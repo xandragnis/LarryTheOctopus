@@ -1,0 +1,2613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#1e293b">
+  <title>Larry The Octopus 🐙🍩</title>
+  
+  <!-- Prevent pull-to-refresh and other gestures -->
+  <style>
+    html, body {
+      overscroll-behavior: none;
+      overflow: hidden;
+      position: fixed;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+    }
+    #root {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+  </style>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Tone.js for audio -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+const GAME_WIDTH = 480;
+const GAME_HEIGHT = 640;
+const LARRY_WIDTH = 90;
+const LARRY_HEIGHT = 70;
+const DONUT_SIZE = 40;
+const LARRY_SPEED = 6;
+const BASE_FALL_SPEED = 2.5;
+
+// ============================================
+// AUDIO SYSTEM - MP3 Music with Crossfade Loop & SFX
+// ============================================
+
+let audioInitialized = false;
+let sfxSynth = null;
+let bubbleSynth = null;
+let reverb = null;
+
+// Music system with crossfade looping
+const MUSIC_URL = 'https://raw.githubusercontent.com/xandragnis/LarryTheOctopus/main/LarysWater.mp3';
+const MUSIC_VOLUME = 0.6; // 60% volume compared to SFX
+const CROSSFADE_DURATION = 4; // seconds to crossfade
+
+let musicTrackA = null;
+let musicTrackB = null;
+let activeTrack = 'A';
+let musicPlaying = false;
+let crossfadeInterval = null;
+let isMuted = false;
+
+const initMusicTracks = () => {
+  musicTrackA = new Audio(MUSIC_URL);
+  musicTrackB = new Audio(MUSIC_URL);
+  
+  musicTrackA.volume = 0;
+  musicTrackB.volume = 0;
+  
+  // Preload both tracks
+  musicTrackA.preload = 'auto';
+  musicTrackB.preload = 'auto';
+  
+  // Handle loading errors gracefully
+  musicTrackA.onerror = () => console.warn('Music track A failed to load');
+  musicTrackB.onerror = () => console.warn('Music track B failed to load');
+};
+
+const startMusic = () => {
+  if (musicPlaying) return;
+  if (!musicTrackA || !musicTrackB) initMusicTracks();
+  
+  musicPlaying = true;
+  activeTrack = 'A';
+  
+  const track = musicTrackA;
+  track.currentTime = 0;
+  track.volume = isMuted ? 0 : MUSIC_VOLUME;
+  track.play().catch(e => console.warn('Music autoplay blocked:', e));
+  
+  // Start monitoring for crossfade
+  if (crossfadeInterval) clearInterval(crossfadeInterval);
+  crossfadeInterval = setInterval(checkCrossfade, 100);
+};
+
+const stopMusic = () => {
+  musicPlaying = false;
+  if (crossfadeInterval) {
+    clearInterval(crossfadeInterval);
+    crossfadeInterval = null;
+  }
+  
+  if (musicTrackA) {
+    musicTrackA.pause();
+    musicTrackA.currentTime = 0;
+    musicTrackA.volume = 0;
+  }
+  if (musicTrackB) {
+    musicTrackB.pause();
+    musicTrackB.currentTime = 0;
+    musicTrackB.volume = 0;
+  }
+};
+
+const checkCrossfade = () => {
+  if (!musicPlaying || isMuted) return;
+  
+  const current = activeTrack === 'A' ? musicTrackA : musicTrackB;
+  const next = activeTrack === 'A' ? musicTrackB : musicTrackA;
+  
+  if (!current || !current.duration) return;
+  
+  const timeRemaining = current.duration - current.currentTime;
+  
+  // Start crossfade when approaching the end
+  if (timeRemaining <= CROSSFADE_DURATION && timeRemaining > 0) {
+    const fadeProgress = 1 - (timeRemaining / CROSSFADE_DURATION);
+    
+    // Fade out current track
+    current.volume = isMuted ? 0 : MUSIC_VOLUME * (1 - fadeProgress);
+    
+    // Start and fade in next track
+    if (next.paused || next.currentTime > 0.5) {
+      next.currentTime = 0;
+      next.play().catch(() => {});
+    }
+    next.volume = isMuted ? 0 : MUSIC_VOLUME * fadeProgress;
+  }
+  
+  // Switch active track when crossfade completes
+  if (timeRemaining <= 0.1) {
+    current.pause();
+    current.currentTime = 0;
+    current.volume = 0;
+    next.volume = isMuted ? 0 : MUSIC_VOLUME;
+    activeTrack = activeTrack === 'A' ? 'B' : 'A';
+  }
+};
+
+const setMusicMute = (muted) => {
+  isMuted = muted;
+  if (musicTrackA) musicTrackA.volume = muted ? 0 : (activeTrack === 'A' && musicPlaying ? MUSIC_VOLUME : 0);
+  if (musicTrackB) musicTrackB.volume = muted ? 0 : (activeTrack === 'B' && musicPlaying ? MUSIC_VOLUME : 0);
+};
+
+const initAudio = async () => {
+  if (audioInitialized) return;
+  
+  try {
+    await Tone.start();
+    
+    reverb = new Tone.Reverb({ decay: 2, wet: 0.3 }).toDestination();
+    
+    sfxSynth = new Tone.Synth({
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.3 },
+      volume: -10
+    }).connect(new Tone.Reverb({ decay: 1, wet: 0.3 }).toDestination());
+    
+    bubbleSynth = new Tone.Synth({
+      oscillator: { type: 'sine' },
+      envelope: { attack: 0.01, decay: 0.1, sustain: 0, release: 0.2 },
+      volume: -22
+    }).connect(reverb);
+    
+    // Initialize music tracks
+    initMusicTracks();
+    
+    audioInitialized = true;
+  } catch (e) {
+    console.warn('Error initializing audio:', e);
+  }
+};
+
+const playCatchSound = () => {
+  if (!audioInitialized || !sfxSynth) return;
+  try {
+    const now = Tone.now();
+    sfxSynth.triggerAttackRelease('C5', '32n', now);
+    sfxSynth.triggerAttackRelease('E5', '32n', now + 0.05);
+    sfxSynth.triggerAttackRelease('G5', '32n', now + 0.1);
+    sfxSynth.triggerAttackRelease('C6', '16n', now + 0.15);
+  } catch (e) {}
+};
+
+const playMissSound = () => {
+  if (!audioInitialized || !sfxSynth) return;
+  try {
+    const now = Tone.now();
+    sfxSynth.triggerAttackRelease('E4', '16n', now);
+    sfxSynth.triggerAttackRelease('C4', '16n', now + 0.1);
+    sfxSynth.triggerAttackRelease('A3', '8n', now + 0.2);
+  } catch (e) {}
+};
+
+const playGameOverSound = () => {
+  if (!audioInitialized || !sfxSynth) return;
+  try {
+    const now = Tone.now();
+    sfxSynth.triggerAttackRelease('E4', '8n', now);
+    sfxSynth.triggerAttackRelease('D4', '8n', now + 0.2);
+    sfxSynth.triggerAttackRelease('C4', '8n', now + 0.4);
+    sfxSynth.triggerAttackRelease('B3', '8n', now + 0.6);
+    sfxSynth.triggerAttackRelease('A3', '4n', now + 0.8);
+  } catch (e) {}
+};
+
+const playBubbleSound = () => {
+  if (!audioInitialized || !bubbleSynth) return;
+  try {
+    const freq = 800 + Math.random() * 600;
+    bubbleSynth.triggerAttackRelease(freq, '32n');
+  } catch (e) {}
+};
+
+const playStartSound = () => {
+  if (!audioInitialized || !sfxSynth) return;
+  try {
+    const now = Tone.now();
+    sfxSynth.triggerAttackRelease('C4', '16n', now);
+    sfxSynth.triggerAttackRelease('E4', '16n', now + 0.1);
+    sfxSynth.triggerAttackRelease('G4', '16n', now + 0.2);
+    sfxSynth.triggerAttackRelease('C5', '8n', now + 0.3);
+  } catch (e) {}
+};
+
+const setMasterMute = (muted) => {
+  if (audioInitialized) {
+    try {
+      Tone.Destination.mute = muted;
+    } catch (e) {}
+  }
+  setMusicMute(muted);
+};
+
+const easeOutBack = (t) => {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+};
+
+// ============================================
+// BACKGROUND DECORATIONS
+// ============================================
+
+const createBackgroundElements = () => {
+  return {
+    starfish: [
+      { x: 60, y: GAME_HEIGHT - 28, rotation: 0.3, color: '#e74c3c', size: 12 },
+      { x: 380, y: GAME_HEIGHT - 25, rotation: -0.5, color: '#f39c12', size: 10 },
+      { x: 200, y: GAME_HEIGHT - 30, rotation: 1.2, color: '#9b59b6', size: 8 },
+    ],
+    anemones: [
+      { x: 420, y: GAME_HEIGHT - 35, color: '#e91e63', size: 20, tentacles: 12 },
+      { x: 30, y: GAME_HEIGHT - 32, color: '#ff5722', size: 15, tentacles: 10 },
+      { x: 280, y: GAME_HEIGHT - 38, color: '#e040fb', size: 18, tentacles: 14 },
+    ],
+    corals: [
+      { x: 100, y: GAME_HEIGHT - 60, type: 'brain', color: '#ff7043', size: 25 },
+      { x: 350, y: GAME_HEIGHT - 55, type: 'branch', color: '#ef5350', size: 35 },
+      { x: 450, y: GAME_HEIGHT - 50, type: 'tube', color: '#ab47bc', size: 20 },
+    ],
+    shells: [
+      { x: 150, y: GAME_HEIGHT - 22, type: 'spiral', size: 8 },
+      { x: 320, y: GAME_HEIGHT - 20, type: 'scallop', size: 10 },
+      { x: 90, y: GAME_HEIGHT - 18, type: 'spiral', size: 6 },
+      { x: 400, y: GAME_HEIGHT - 24, type: 'scallop', size: 7 },
+    ],
+    plankton: Array.from({ length: 50 }, () => ({
+      x: Math.random() * GAME_WIDTH,
+      y: Math.random() * (GAME_HEIGHT - 100),
+      size: 1 + Math.random() * 2,
+      speed: 0.1 + Math.random() * 0.3,
+      drift: Math.random() * Math.PI * 2,
+      brightness: 0.3 + Math.random() * 0.4,
+    })),
+    lightRays: Array.from({ length: 5 }, (_, i) => ({
+      x: 50 + i * 100 + Math.random() * 50,
+      width: 30 + Math.random() * 40,
+      opacity: 0.03 + Math.random() * 0.04,
+      sway: Math.random() * Math.PI * 2,
+    })),
+    bubbleStreams: Array.from({ length: 4 }, () => ({
+      x: 50 + Math.random() * (GAME_WIDTH - 100),
+      bubbles: Array.from({ length: 5 }, (_, i) => ({
+        y: GAME_HEIGHT - 40 - i * 60 - Math.random() * 40,
+        size: 2 + Math.random() * 4,
+        wobbleOffset: Math.random() * Math.PI * 2,
+        speed: 0.3 + Math.random() * 0.4,
+      })),
+    })),
+    bgFish: Array.from({ length: 12 }, () => ({
+      x: Math.random() * GAME_WIDTH,
+      y: 50 + Math.random() * 300,
+      size: 3 + Math.random() * 5,
+      speed: 0.2 + Math.random() * 0.5,
+      dir: Math.random() > 0.5 ? 1 : -1,
+      color: ['#5dade2', '#85c1e9', '#aed6f1', '#7fb3d5'][Math.floor(Math.random() * 4)],
+      wigglePhase: Math.random() * Math.PI * 2,
+    })),
+    distantCreatures: [
+      { type: 'whale', x: -200, y: 80, speed: 0.15, size: 1, active: false, lastSpawn: 0 },
+      { type: 'manta', x: GAME_WIDTH + 100, y: 120, speed: -0.2, size: 0.8, active: false, lastSpawn: 0 },
+    ],
+    sparkles: Array.from({ length: 20 }, () => ({
+      x: Math.random() * GAME_WIDTH,
+      y: 100 + Math.random() * 400,
+      phase: Math.random() * Math.PI * 2,
+      size: 1 + Math.random() * 2,
+      pulseSpeed: 0.02 + Math.random() * 0.03,
+    })),
+    debris: Array.from({ length: 15 }, () => ({
+      x: Math.random() * GAME_WIDTH,
+      y: Math.random() * GAME_HEIGHT,
+      size: 1 + Math.random() * 3,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.02,
+      driftX: (Math.random() - 0.5) * 0.3,
+      driftY: -0.1 - Math.random() * 0.2,
+      type: Math.random() > 0.5 ? 'leaf' : 'speck',
+    })),
+  };
+};
+
+const drawBackgroundElements = (ctx, elements, time) => {
+  // Light rays
+  elements.lightRays.forEach(ray => {
+    const sway = Math.sin(time * 0.0003 + ray.sway) * 20;
+    const gradient = ctx.createLinearGradient(ray.x + sway, 0, ray.x + sway + ray.width, GAME_HEIGHT * 0.7);
+    gradient.addColorStop(0, `rgba(135, 206, 235, ${ray.opacity * 2})`);
+    gradient.addColorStop(1, 'rgba(135, 206, 235, 0)');
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.moveTo(ray.x + sway, 0);
+    ctx.lineTo(ray.x + sway + ray.width, 0);
+    ctx.lineTo(ray.x + sway + ray.width * 1.5, GAME_HEIGHT * 0.7);
+    ctx.lineTo(ray.x + sway - ray.width * 0.3, GAME_HEIGHT * 0.7);
+    ctx.closePath();
+    ctx.fill();
+  });
+
+  // Distant silhouettes
+  elements.distantCreatures.forEach(creature => {
+    if (!creature.active && time - creature.lastSpawn > 15000 && Math.random() < 0.001) {
+      creature.active = true;
+      creature.x = creature.speed > 0 ? -200 : GAME_WIDTH + 200;
+    }
+    
+    if (creature.active) {
+      creature.x += creature.speed;
+      
+      if ((creature.speed > 0 && creature.x > GAME_WIDTH + 250) || 
+          (creature.speed < 0 && creature.x < -250)) {
+        creature.active = false;
+        creature.lastSpawn = time;
+      }
+      
+      ctx.globalAlpha = 0.15;
+      ctx.fillStyle = '#1a3a55';
+      
+      if (creature.type === 'whale') {
+        const s = creature.size;
+        const wx = creature.x;
+        const wy = creature.y + Math.sin(time * 0.001) * 10;
+        ctx.beginPath();
+        ctx.ellipse(wx, wy, 80 * s, 25 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(wx - 70 * s, wy);
+        ctx.quadraticCurveTo(wx - 100 * s, wy - 20 * s, wx - 110 * s, wy - 35 * s);
+        ctx.quadraticCurveTo(wx - 95 * s, wy, wx - 110 * s, wy + 35 * s);
+        ctx.quadraticCurveTo(wx - 100 * s, wy + 20 * s, wx - 70 * s, wy);
+        ctx.fill();
+      } else if (creature.type === 'manta') {
+        const s = creature.size;
+        const mx = creature.x;
+        const my = creature.y + Math.sin(time * 0.0015) * 15;
+        const wingFlap = Math.sin(time * 0.003) * 8;
+        ctx.beginPath();
+        ctx.ellipse(mx, my, 40 * s, 15 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(mx - 30 * s, my + wingFlap, 35 * s, 8 * s, -0.3, 0, Math.PI * 2);
+        ctx.ellipse(mx + 30 * s, my - wingFlap, 35 * s, 8 * s, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(mx - 35 * s, my);
+        ctx.lineTo(mx - 70 * s, my + Math.sin(time * 0.004) * 5);
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#1a3a55';
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  });
+
+  // Background fish
+  elements.bgFish.forEach(fish => {
+    fish.x += fish.speed * fish.dir;
+    fish.wigglePhase += 0.1;
+    
+    if (fish.dir > 0 && fish.x > GAME_WIDTH + 20) fish.x = -20;
+    if (fish.dir < 0 && fish.x < -20) fish.x = GAME_WIDTH + 20;
+    
+    const fishY = fish.y + Math.sin(fish.wigglePhase) * 2;
+    
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = fish.color;
+    ctx.beginPath();
+    ctx.ellipse(fish.x, fishY, fish.size, fish.size * 0.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(fish.x - fish.dir * fish.size, fishY);
+    ctx.lineTo(fish.x - fish.dir * (fish.size + 4), fishY - 2);
+    ctx.lineTo(fish.x - fish.dir * (fish.size + 4), fishY + 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  });
+
+  // Sparkles
+  elements.sparkles.forEach(sparkle => {
+    sparkle.phase += sparkle.pulseSpeed;
+    const glow = (Math.sin(sparkle.phase) + 1) / 2;
+    
+    if (glow > 0.3) {
+      ctx.globalAlpha = glow * 0.6;
+      ctx.fillStyle = '#7fdbff';
+      ctx.beginPath();
+      ctx.arc(sparkle.x, sparkle.y, sparkle.size * glow, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.globalAlpha = glow * 0.2;
+      ctx.beginPath();
+      ctx.arc(sparkle.x, sparkle.y, sparkle.size * 3 * glow, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  });
+
+  // Debris
+  elements.debris.forEach(d => {
+    d.x += d.driftX;
+    d.y += d.driftY;
+    d.rotation += d.rotSpeed;
+    
+    if (d.y < -10) {
+      d.y = GAME_HEIGHT + 10;
+      d.x = Math.random() * GAME_WIDTH;
+    }
+    if (d.x < -10) d.x = GAME_WIDTH + 10;
+    if (d.x > GAME_WIDTH + 10) d.x = -10;
+    
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = d.type === 'leaf' ? '#3d5c3a' : '#8b7355';
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.rotation);
+    
+    if (d.type === 'leaf') {
+      ctx.beginPath();
+      ctx.ellipse(0, 0, d.size * 2, d.size, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.beginPath();
+      ctx.arc(0, 0, d.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  });
+
+  // Bubble streams
+  elements.bubbleStreams.forEach(stream => {
+    stream.bubbles.forEach(bubble => {
+      bubble.y -= bubble.speed;
+      if (bubble.y < -20) {
+        bubble.y = GAME_HEIGHT - 30;
+        bubble.size = 2 + Math.random() * 4;
+      }
+      
+      const wobble = Math.sin(time * 0.003 + bubble.wobbleOffset) * 3;
+      
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = 'rgba(200, 230, 255, 0.5)';
+      ctx.beginPath();
+      ctx.arc(stream.x + wobble, bubble.y, bubble.size, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(stream.x + wobble, bubble.y, bubble.size, 0, Math.PI * 2);
+      ctx.stroke();
+      
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.beginPath();
+      ctx.arc(stream.x + wobble - bubble.size * 0.3, bubble.y - bubble.size * 0.3, bubble.size * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+  });
+
+  // Plankton
+  elements.plankton.forEach(p => {
+    p.drift += 0.02;
+    p.y -= p.speed;
+    p.x += Math.sin(p.drift) * 0.3;
+    if (p.y < -10) {
+      p.y = GAME_HEIGHT - 50;
+      p.x = Math.random() * GAME_WIDTH;
+    }
+    ctx.fillStyle = `rgba(200, 230, 255, ${p.brightness})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Corals
+  elements.corals.forEach(coral => {
+    ctx.save();
+    ctx.translate(coral.x, coral.y);
+    
+    if (coral.type === 'brain') {
+      ctx.fillStyle = coral.color;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, coral.size, coral.size * 0.7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#c0392b';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.arc(Math.sin(i * 1.3) * coral.size * 0.4, Math.cos(i * 1.7) * coral.size * 0.3, 
+                coral.size * 0.2 + i * 2, 0, Math.PI * 1.5);
+        ctx.stroke();
+      }
+    } else if (coral.type === 'branch') {
+      ctx.strokeStyle = coral.color;
+      ctx.lineCap = 'round';
+      const sway = Math.sin(time * 0.001) * 2;
+      const drawBranch = (x, y, angle, length, width) => {
+        if (length < 5) return;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        const endX = x + Math.cos(angle) * length + sway * (length / 30);
+        const endY = y + Math.sin(angle) * length;
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        if (length > 8) {
+          drawBranch(endX, endY, angle - 0.4, length * 0.7, width * 0.7);
+          drawBranch(endX, endY, angle + 0.5, length * 0.65, width * 0.7);
+        }
+      };
+      drawBranch(0, 0, -Math.PI/2, coral.size, 4);
+    } else if (coral.type === 'tube') {
+      for (let i = 0; i < 6; i++) {
+        const angle = (i / 6) * Math.PI * 2;
+        const tx = Math.cos(angle) * coral.size * 0.4;
+        const sw = Math.sin(time * 0.002 + i) * 2;
+        ctx.fillStyle = coral.color;
+        ctx.beginPath();
+        ctx.ellipse(tx + sw, -coral.size * 0.5, 4, coral.size * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#7b1fa2';
+        ctx.beginPath();
+        ctx.ellipse(tx + sw, -coral.size * 0.9, 3, 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  });
+
+  // Anemones
+  elements.anemones.forEach(anemone => {
+    ctx.save();
+    ctx.translate(anemone.x, anemone.y);
+    ctx.fillStyle = '#8d6e63';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, anemone.size * 0.6, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    for (let i = 0; i < anemone.tentacles; i++) {
+      const angle = (i / anemone.tentacles) * Math.PI - Math.PI / 2;
+      const baseX = Math.cos(angle) * anemone.size * 0.4;
+      const sway = Math.sin(time * 0.003 + i * 0.5) * 8;
+      const length = anemone.size * (0.8 + Math.sin(i * 0.7) * 0.3);
+      ctx.strokeStyle = anemone.color;
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(baseX, 0);
+      ctx.quadraticCurveTo(baseX + sway, -length * 0.5, baseX + sway * 1.5, -length);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(baseX + sway * 1.5, -length, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  });
+
+  // Shells
+  elements.shells.forEach(shell => {
+    ctx.save();
+    ctx.translate(shell.x, shell.y);
+    if (shell.type === 'spiral') {
+      ctx.fillStyle = '#d7ccc8';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, shell.size, shell.size * 0.6, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#a1887f';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(-shell.size * 0.2, 0, shell.size * (0.3 + i * 0.2), 0, Math.PI * 1.5);
+        ctx.stroke();
+      }
+    } else {
+      ctx.fillStyle = '#ffccbc';
+      ctx.beginPath();
+      ctx.moveTo(0, shell.size * 0.3);
+      for (let i = 0; i <= 8; i++) {
+        const angle = (i / 8) * Math.PI;
+        const r = shell.size * (1 + Math.sin(i * Math.PI) * 0.1);
+        ctx.lineTo(Math.cos(angle) * r, -Math.sin(angle) * r * 0.7);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#ffab91';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 8; i++) {
+        const angle = (i / 8) * Math.PI;
+        ctx.beginPath();
+        ctx.moveTo(0, shell.size * 0.2);
+        ctx.lineTo(Math.cos(angle) * shell.size * 0.9, -Math.sin(angle) * shell.size * 0.6);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  });
+
+  // Starfish
+  elements.starfish.forEach(star => {
+    ctx.save();
+    ctx.translate(star.x, star.y);
+    ctx.rotate(star.rotation + Math.sin(time * 0.0005) * 0.05);
+    ctx.fillStyle = star.color;
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const outerAngle = (i / 5) * Math.PI * 2 - Math.PI / 2;
+      const innerAngle = outerAngle + Math.PI / 5;
+      const outerX = Math.cos(outerAngle) * star.size;
+      const outerY = Math.sin(outerAngle) * star.size;
+      const innerX = Math.cos(innerAngle) * star.size * 0.4;
+      const innerY = Math.sin(innerAngle) * star.size * 0.4;
+      if (i === 0) ctx.moveTo(outerX, outerY);
+      else ctx.lineTo(outerX, outerY);
+      ctx.lineTo(innerX, innerY);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let i = 0; i < 5; i++) {
+      const angle = (i / 5) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(angle) * star.size * 0.5, Math.sin(angle) * star.size * 0.5, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  });
+};
+
+// ============================================
+// SEA CREATURES
+// ============================================
+
+const createCreature = (type) => {
+  const now = Date.now();
+  
+  switch (type) {
+    case 'fish':
+      const fishDir = Math.random() > 0.5 ? 1 : -1;
+      const fishCount = 4 + Math.floor(Math.random() * 5);
+      const schoolCenterX = fishDir > 0 ? -80 : GAME_WIDTH + 80;
+      const schoolCenterY = 100 + Math.random() * 250;
+      return {
+        type: 'fish',
+        schoolX: schoolCenterX,
+        schoolY: schoolCenterY,
+        schoolVX: fishDir * (0.6 + Math.random() * 0.4),
+        schoolTargetY: schoolCenterY,
+        schoolYChangeTimer: now + 2000 + Math.random() * 3000,
+        fish: Array.from({ length: fishCount }, () => ({
+          offsetX: (Math.random() - 0.5) * 60,
+          offsetY: (Math.random() - 0.5) * 40,
+          vx: 0,
+          vy: 0,
+          targetOffsetX: (Math.random() - 0.5) * 50,
+          targetOffsetY: (Math.random() - 0.5) * 35,
+          nextTargetChange: now + 500 + Math.random() * 2000,
+          size: 8 + Math.random() * 7,
+          color: ['#ff9f43', '#feca57', '#ff6b6b', '#48dbfb', '#1dd1a1', '#a29bfe'][Math.floor(Math.random() * 6)],
+          wigglePhase: Math.random() * Math.PI * 2,
+          wiggleSpeed: 0.1 + Math.random() * 0.1,
+          speedMult: 0.7 + Math.random() * 0.6,
+        })),
+        born: now,
+        lifespan: 20000
+      };
+      
+    case 'jellyfish':
+      return {
+        type: 'jellyfish',
+        x: 50 + Math.random() * (GAME_WIDTH - 100),
+        y: GAME_HEIGHT + 30,
+        vy: -0.3 - Math.random() * 0.3,
+        wobble: Math.random() * Math.PI * 2,
+        size: 20 + Math.random() * 15,
+        color: Math.random() > 0.5 ? '#ee5a9f' : '#9b59b6',
+        born: now,
+        lifespan: 25000
+      };
+      
+    case 'crab':
+      return {
+        type: 'crab',
+        x: 100 + Math.random() * (GAME_WIDTH - 200),
+        y: GAME_HEIGHT - 25,
+        state: 'emerging',
+        stateTime: now,
+        emergePct: 0,
+        lookDir: 0,
+        danceFrame: 0,
+        born: now,
+        lifespan: 12000
+      };
+      
+    case 'turtle':
+      const turtleDir = Math.random() > 0.5 ? 1 : -1;
+      return {
+        type: 'turtle',
+        x: turtleDir > 0 ? -60 : GAME_WIDTH + 60,
+        y: 150 + Math.random() * 200,
+        vx: turtleDir * 0.8,
+        flapPhase: 0,
+        born: now,
+        lifespan: 20000
+      };
+      
+    case 'clam':
+      return {
+        type: 'clam',
+        x: 80 + Math.random() * (GAME_WIDTH - 160),
+        y: GAME_HEIGHT - 32,
+        isOpen: false,
+        openAmount: 0,
+        openTime: 0,
+        bubbles: [],
+        nextBubble: 0,
+        born: now,
+        lifespan: 18000
+      };
+      
+    case 'shrimp':
+      const shrimpDir = Math.random() > 0.5 ? 1 : -1;
+      return {
+        type: 'shrimp',
+        x: shrimpDir > 0 ? -20 : GAME_WIDTH + 20,
+        y: GAME_HEIGHT - 50 - Math.random() * 30,
+        vx: shrimpDir * (1.2 + Math.random() * 0.8),
+        wiggle: 0,
+        born: now,
+        lifespan: 8000
+      };
+      
+    case 'seahorse':
+      return {
+        type: 'seahorse',
+        x: 30 + Math.random() * (GAME_WIDTH - 60),
+        y: GAME_HEIGHT - 80 - Math.random() * 150,
+        bobPhase: Math.random() * Math.PI * 2,
+        swayPhase: Math.random() * Math.PI * 2,
+        size: 15 + Math.random() * 10,
+        color: ['#f1c40f', '#e67e22', '#e91e63', '#9b59b6'][Math.floor(Math.random() * 4)],
+        born: now,
+        lifespan: 15000
+      };
+      
+    case 'pufferfish':
+      const puffDir = Math.random() > 0.5 ? 1 : -1;
+      return {
+        type: 'pufferfish',
+        x: puffDir > 0 ? -40 : GAME_WIDTH + 40,
+        y: 150 + Math.random() * 200,
+        vx: puffDir * (0.4 + Math.random() * 0.3),
+        puffed: false,
+        puffAmount: 0,
+        puffTimer: 0,
+        finPhase: Math.random() * Math.PI * 2,
+        born: now,
+        lifespan: 18000
+      };
+      
+    default:
+      return null;
+  }
+};
+
+const updateCreature = (creature, time) => {
+  const age = time - creature.born;
+  
+  switch (creature.type) {
+    case 'fish':
+      creature.schoolX += creature.schoolVX;
+      if (time > creature.schoolYChangeTimer) {
+        creature.schoolTargetY = 80 + Math.random() * 280;
+        creature.schoolYChangeTimer = time + 3000 + Math.random() * 4000;
+      }
+      const schoolYDiff = creature.schoolTargetY - creature.schoolY;
+      creature.schoolY += schoolYDiff * 0.01;
+      
+      creature.fish.forEach(f => {
+        f.wigglePhase += f.wiggleSpeed;
+        if (time > f.nextTargetChange) {
+          f.targetOffsetX = (Math.random() - 0.5) * 60;
+          f.targetOffsetY = (Math.random() - 0.5) * 45;
+          f.nextTargetChange = time + 800 + Math.random() * 2500;
+        }
+        const dx = f.targetOffsetX - f.offsetX;
+        const dy = f.targetOffsetY - f.offsetY;
+        f.vx += dx * 0.008 * f.speedMult;
+        f.vy += dy * 0.008 * f.speedMult;
+        f.vx += (Math.random() - 0.5) * 0.1;
+        f.vy += (Math.random() - 0.5) * 0.1;
+        f.vx *= 0.95;
+        f.vy *= 0.95;
+        const maxSpeed = 1.5 * f.speedMult;
+        const speed = Math.sqrt(f.vx * f.vx + f.vy * f.vy);
+        if (speed > maxSpeed) {
+          f.vx = (f.vx / speed) * maxSpeed;
+          f.vy = (f.vy / speed) * maxSpeed;
+        }
+        f.offsetX += f.vx;
+        f.offsetY += f.vy;
+        if (Math.abs(f.offsetX) > 70) f.offsetX *= 0.95;
+        if (Math.abs(f.offsetY) > 50) f.offsetY *= 0.95;
+      });
+      break;
+      
+    case 'jellyfish':
+      creature.y += creature.vy;
+      creature.wobble += 0.03;
+      creature.x += Math.sin(creature.wobble) * 0.5;
+      break;
+      
+    case 'crab':
+      const stateAge = time - creature.stateTime;
+      switch (creature.state) {
+        case 'emerging':
+          creature.emergePct = Math.min(1, stateAge / 1000);
+          if (creature.emergePct >= 1) {
+            creature.state = 'looking';
+            creature.stateTime = time;
+          }
+          break;
+        case 'looking':
+          creature.lookDir = Math.sin(stateAge * 0.005) * 0.5;
+          if (stateAge > 2000) {
+            creature.state = 'dancing';
+            creature.stateTime = time;
+          }
+          break;
+        case 'dancing':
+          creature.danceFrame = Math.floor(stateAge / 150) % 4;
+          if (stateAge > 3000) {
+            creature.state = 'waving';
+            creature.stateTime = time;
+          }
+          break;
+        case 'waving':
+          creature.danceFrame = Math.floor(stateAge / 100) % 2;
+          if (stateAge > 2000) {
+            creature.state = 'retreating';
+            creature.stateTime = time;
+          }
+          break;
+        case 'retreating':
+          creature.emergePct = Math.max(0, 1 - stateAge / 800);
+          if (creature.emergePct <= 0) creature.state = 'gone';
+          break;
+      }
+      break;
+      
+    case 'turtle':
+      creature.x += creature.vx;
+      creature.flapPhase += 0.05;
+      creature.y += Math.sin(creature.flapPhase * 0.5) * 0.3;
+      break;
+      
+    case 'clam':
+      if (!creature.isOpen && Math.random() < 0.003) {
+        creature.isOpen = true;
+        creature.openTime = time;
+        creature.nextBubble = time + 200;
+      }
+      if (creature.isOpen) {
+        creature.openAmount = Math.min(1, creature.openAmount + 0.08);
+        if (time > creature.nextBubble && creature.bubbles.length < 8) {
+          creature.bubbles.push({
+            x: creature.x + 15 + (Math.random() - 0.5) * 10,
+            y: creature.y - creature.openAmount * 8,
+            vy: -0.5 - Math.random() * 0.5,
+            vx: (Math.random() - 0.5) * 0.3,
+            size: 2 + Math.random() * 4,
+            wobble: Math.random() * Math.PI * 2,
+            opacity: 0.6 + Math.random() * 0.3,
+          });
+          creature.nextBubble = time + 150 + Math.random() * 200;
+        }
+        if (time - creature.openTime > 2000) creature.isOpen = false;
+      } else {
+        creature.openAmount = Math.max(0, creature.openAmount - 0.05);
+      }
+      creature.bubbles = creature.bubbles.filter(b => {
+        b.y += b.vy;
+        b.vy *= 0.99;
+        b.vy -= 0.01;
+        b.wobble += 0.08;
+        b.x += Math.sin(b.wobble) * 0.4 + b.vx;
+        b.size *= 1.002;
+        b.opacity -= 0.003;
+        return b.y > creature.y - 120 && b.opacity > 0;
+      });
+      break;
+      
+    case 'shrimp':
+      creature.x += creature.vx;
+      creature.wiggle += 0.15;
+      break;
+      
+    case 'seahorse':
+      creature.bobPhase += 0.03;
+      creature.swayPhase += 0.02;
+      creature.y += Math.sin(creature.bobPhase) * 0.3;
+      creature.x += Math.sin(creature.swayPhase) * 0.2;
+      break;
+      
+    case 'pufferfish':
+      creature.x += creature.vx;
+      creature.finPhase += 0.15;
+      if (!creature.puffed && Math.random() < 0.002) {
+        creature.puffed = true;
+        creature.puffTimer = time;
+      }
+      if (creature.puffed) {
+        creature.puffAmount = Math.min(1, creature.puffAmount + 0.05);
+        if (time - creature.puffTimer > 2000) {
+          creature.puffed = false;
+        }
+      } else {
+        creature.puffAmount = Math.max(0, creature.puffAmount - 0.03);
+      }
+      break;
+  }
+  
+  return age < creature.lifespan && creature.state !== 'gone';
+};
+
+const drawCreature = (ctx, creature, time) => {
+  switch (creature.type) {
+    case 'fish':
+      creature.fish.forEach(f => {
+        const fx = creature.schoolX + f.offsetX;
+        const fy = creature.schoolY + f.offsetY + Math.sin(f.wigglePhase) * 2;
+        const dir = creature.schoolVX > 0 ? 1 : -1;
+        const angle = Math.atan2(f.vy, Math.abs(f.vx) * dir + creature.schoolVX) * 0.3;
+        
+        ctx.save();
+        ctx.translate(fx, fy);
+        ctx.rotate(angle);
+        
+        ctx.fillStyle = f.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, f.size, f.size * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        const tailWag = Math.sin(f.wigglePhase * 2) * 3;
+        ctx.beginPath();
+        ctx.moveTo(-dir * f.size * 0.8, 0);
+        ctx.lineTo(-dir * (f.size + 7) + tailWag, -5);
+        ctx.lineTo(-dir * (f.size + 7) + tailWag, 5);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.beginPath();
+        ctx.moveTo(0, -f.size * 0.4);
+        ctx.lineTo(-dir * 3, -f.size * 0.9);
+        ctx.lineTo(-dir * 5, -f.size * 0.4);
+        ctx.closePath();
+        ctx.fill();
+        
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(dir * f.size * 0.35, -f.size * 0.1, f.size * 0.22, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(dir * f.size * 0.4, -f.size * 0.08, f.size * 0.12, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.restore();
+      });
+      break;
+      
+    case 'jellyfish':
+      const jx = creature.x;
+      const jy = creature.y;
+      const js = creature.size;
+      const pulse = Math.sin(time * 0.005) * 0.15 + 1;
+      
+      ctx.fillStyle = creature.color + '88';
+      ctx.beginPath();
+      ctx.ellipse(jx, jy, js * pulse, js * 0.7 * pulse, 0, Math.PI, 0);
+      ctx.fill();
+      
+      ctx.fillStyle = creature.color + '44';
+      ctx.beginPath();
+      ctx.ellipse(jx, jy - 5, js * 0.6 * pulse, js * 0.4 * pulse, 0, Math.PI, 0);
+      ctx.fill();
+      
+      ctx.strokeStyle = creature.color + '66';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 5; i++) {
+        const tx = jx - js * 0.6 + (i / 4) * js * 1.2;
+        ctx.beginPath();
+        ctx.moveTo(tx, jy);
+        const wave = Math.sin(time * 0.003 + i) * 8;
+        ctx.quadraticCurveTo(tx + wave, jy + js * 0.8, tx + wave * 0.5, jy + js * 1.5);
+        ctx.stroke();
+      }
+      break;
+      
+    case 'crab':
+      if (creature.state === 'gone') return;
+      
+      const cx = creature.x;
+      const cy = creature.y - creature.emergePct * 20;
+      const crabBob = creature.state === 'dancing' ? Math.sin(time * 0.02) * 3 : 0;
+      
+      ctx.fillStyle = '#e74c3c';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + crabBob, 18, 12, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#ff6b6b';
+      ctx.beginPath();
+      ctx.ellipse(cx - 5, cy - 3 + crabBob, 5, 3, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+      
+      const eyeOffset = creature.lookDir * 5;
+      ctx.fillStyle = '#f39c12';
+      ctx.fillRect(cx - 10 + eyeOffset, cy - 15 + crabBob, 3, 10);
+      ctx.fillRect(cx + 7 + eyeOffset, cy - 15 + crabBob, 3, 10);
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(cx - 8.5 + eyeOffset, cy - 17 + crabBob, 4, 0, Math.PI * 2);
+      ctx.arc(cx + 8.5 + eyeOffset, cy - 17 + crabBob, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(cx - 8 + eyeOffset, cy - 17 + crabBob, 2, 0, Math.PI * 2);
+      ctx.arc(cx + 9 + eyeOffset, cy - 17 + crabBob, 2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      const clawUp = creature.state === 'waving' ? (creature.danceFrame === 0 ? -15 : 0) : 0;
+      const clawWave = creature.state === 'dancing' ? Math.sin(time * 0.01 + 1) * 5 : 0;
+      
+      ctx.fillStyle = '#e74c3c';
+      ctx.beginPath();
+      ctx.ellipse(cx - 28, cy - 5 + crabBob + clawWave, 10, 7, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx - 32, cy - 12 + crabBob + clawWave + clawUp, 6, 4, -0.5, 0, Math.PI * 2);
+      ctx.ellipse(cx - 28, cy - 8 + crabBob + clawWave + clawUp, 5, 3, 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.ellipse(cx + 28, cy - 5 + crabBob - clawWave, 10, 7, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(cx + 32, cy - 12 + crabBob - clawWave, 6, 4, 0.5, 0, Math.PI * 2);
+      ctx.ellipse(cx + 28, cy - 8 + crabBob - clawWave, 5, 3, -0.5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#c0392b';
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 3; i++) {
+        const legWave = creature.state === 'dancing' ? Math.sin(time * 0.015 + i) * 3 : 0;
+        ctx.beginPath();
+        ctx.moveTo(cx - 12 - i * 3, cy + 5 + crabBob);
+        ctx.lineTo(cx - 20 - i * 5, cy + 15 + legWave);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx + 12 + i * 3, cy + 5 + crabBob);
+        ctx.lineTo(cx + 20 + i * 5, cy + 15 - legWave);
+        ctx.stroke();
+      }
+      break;
+      
+    case 'turtle':
+      const tx = creature.x;
+      const ty = creature.y;
+      const tdir = creature.vx > 0 ? 1 : -1;
+      const flapAmt = Math.sin(creature.flapPhase) * 10;
+      
+      ctx.fillStyle = '#27ae60';
+      ctx.beginPath();
+      ctx.ellipse(tx, ty, 25, 18, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#2ecc71';
+      ctx.beginPath();
+      ctx.ellipse(tx, ty - 2, 15, 10, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#27ae60';
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(tx + Math.cos(a) * 10, ty - 2 + Math.sin(a) * 6, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      ctx.fillStyle = '#1abc9c';
+      ctx.beginPath();
+      ctx.ellipse(tx + tdir * 30, ty, 10, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(tx + tdir * 34, ty - 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#1abc9c';
+      ctx.beginPath();
+      ctx.ellipse(tx + tdir * 15, ty - 12 + flapAmt, 12, 6, tdir * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(tx + tdir * 15, ty + 12 - flapAmt * 0.5, 12, 6, -tdir * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(tx - tdir * 20, ty - 8, 8, 5, -tdir * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(tx - tdir * 20, ty + 8, 8, 5, tdir * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+      
+    case 'clam':
+      const clx = creature.x;
+      const cly = creature.y;
+      const openAmt = creature.openAmount * 0.5;
+      
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.ellipse(clx + 15, cly + 8, 22, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#a0887a';
+      ctx.beginPath();
+      ctx.moveTo(clx, cly);
+      ctx.quadraticCurveTo(clx + 15, cly + 15, clx + 30, cly);
+      ctx.quadraticCurveTo(clx + 15, cly + 5, clx, cly);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#8d7566';
+      ctx.lineWidth = 1;
+      for (let i = 1; i <= 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(clx + 3, cly + i * 2);
+        ctx.quadraticCurveTo(clx + 15, cly + 12 - i * 1.5, clx + 27, cly + i * 2);
+        ctx.stroke();
+      }
+      
+      ctx.save();
+      ctx.translate(clx, cly);
+      ctx.rotate(-openAmt);
+      
+      ctx.fillStyle = '#c4b5a5';
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(15, -15, 30, 0);
+      ctx.quadraticCurveTo(15, -5, 0, 0);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#b0a090';
+      ctx.lineWidth = 1;
+      for (let i = 1; i <= 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(3, -i * 1.5);
+        ctx.quadraticCurveTo(15, -12 + i * 1.5, 27, -i * 1.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+      
+      if (creature.openAmount > 0.3) {
+        const pearlGlow = Math.sin(time * 0.005) * 0.2 + 0.8;
+        ctx.fillStyle = `rgba(255, 255, 255, ${pearlGlow})`;
+        ctx.beginPath();
+        ctx.arc(clx + 15, cly - 2, 5 * creature.openAmount, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.beginPath();
+        ctx.arc(clx + 13, cly - 4, 2 * creature.openAmount, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      creature.bubbles.forEach(b => {
+        ctx.fillStyle = `rgba(200, 230, 255, ${b.opacity * 0.5})`;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${b.opacity * 0.6})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255, 255, 255, ${b.opacity * 0.8})`;
+        ctx.beginPath();
+        ctx.arc(b.x - b.size * 0.3, b.y - b.size * 0.3, b.size * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      break;
+      
+    case 'shrimp':
+      const sx = creature.x;
+      const sy = creature.y;
+      const sdir = creature.vx > 0 ? 1 : -1;
+      const shrimpWiggle = Math.sin(creature.wiggle) * 2;
+      
+      ctx.fillStyle = '#fd79a8';
+      for (let i = 0; i < 5; i++) {
+        const segY = sy + Math.sin(creature.wiggle + i * 0.5) * 1.5;
+        ctx.beginPath();
+        ctx.ellipse(sx - sdir * i * 6, segY, 5 - i * 0.3, 4 - i * 0.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      ctx.fillStyle = '#f8a5c2';
+      ctx.beginPath();
+      ctx.moveTo(sx - sdir * 28, sy);
+      ctx.lineTo(sx - sdir * 38, sy - 6 + shrimpWiggle);
+      ctx.lineTo(sx - sdir * 40, sy);
+      ctx.lineTo(sx - sdir * 38, sy + 6 + shrimpWiggle);
+      ctx.closePath();
+      ctx.fill();
+      
+      ctx.strokeStyle = '#fd79a8';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 4; i++) {
+        const legX = sx - sdir * i * 4;
+        ctx.beginPath();
+        ctx.moveTo(legX, sy + 3);
+        ctx.lineTo(legX - sdir * 2, sy + 8);
+        ctx.stroke();
+      }
+      
+      ctx.beginPath();
+      ctx.moveTo(sx + sdir * 4, sy - 2);
+      ctx.quadraticCurveTo(sx + sdir * 15, sy - 12 + shrimpWiggle, sx + sdir * 25, sy - 8);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx + sdir * 4, sy + 1);
+      ctx.quadraticCurveTo(sx + sdir * 15, sy + 8 + shrimpWiggle, sx + sdir * 22, sy + 12);
+      ctx.stroke();
+      
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(sx + sdir * 4, sy - 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+      
+    case 'seahorse':
+      const shx = creature.x;
+      const shy = creature.y;
+      const shsize = creature.size;
+      const shbob = Math.sin(creature.bobPhase) * 3;
+      
+      ctx.fillStyle = creature.color;
+      ctx.beginPath();
+      ctx.moveTo(shx, shy + shsize * 0.8);
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 1.5;
+        const radius = shsize * 0.3 * (1 - i / 10);
+        ctx.lineTo(
+          shx - Math.sin(angle) * radius - i * 1.5,
+          shy + shsize * 0.8 + Math.cos(angle) * radius + i * 2
+        );
+      }
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = creature.color;
+      ctx.stroke();
+      
+      ctx.fillStyle = creature.color;
+      ctx.beginPath();
+      ctx.ellipse(shx, shy + shbob, shsize * 0.35, shsize * 0.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#ffffff44';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        ctx.beginPath();
+        ctx.arc(shx, shy + shbob - shsize * 0.3 + i * shsize * 0.15, shsize * 0.25, 0.5, Math.PI - 0.5);
+        ctx.stroke();
+      }
+      
+      ctx.fillStyle = creature.color;
+      ctx.beginPath();
+      ctx.ellipse(shx + shsize * 0.15, shy - shsize * 0.5 + shbob, shsize * 0.25, shsize * 0.3, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.ellipse(shx + shsize * 0.4, shy - shsize * 0.55 + shbob, shsize * 0.2, shsize * 0.08, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      const finWave = Math.sin(time * 0.01) * 2;
+      ctx.beginPath();
+      ctx.moveTo(shx - shsize * 0.2, shy - shsize * 0.2 + shbob);
+      ctx.quadraticCurveTo(shx - shsize * 0.5 + finWave, shy - shsize * 0.1 + shbob, shx - shsize * 0.3, shy + shsize * 0.3 + shbob);
+      ctx.strokeStyle = creature.color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(shx + shsize * 0.2, shy - shsize * 0.5 + shbob, shsize * 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(shx + shsize * 0.22, shy - shsize * 0.5 + shbob, shsize * 0.05, 0, Math.PI * 2);
+      ctx.fill();
+      
+      for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = creature.color;
+        ctx.beginPath();
+        ctx.moveTo(shx + shsize * 0.1 - i * 3, shy - shsize * 0.7 + shbob);
+        ctx.lineTo(shx + shsize * 0.05 - i * 3, shy - shsize * 0.9 + shbob - i * 2);
+        ctx.lineTo(shx - i * 3, shy - shsize * 0.7 + shbob);
+        ctx.fill();
+      }
+      break;
+      
+    case 'pufferfish':
+      const pfx = creature.x;
+      const pfy = creature.y;
+      const pfdir = creature.vx > 0 ? 1 : -1;
+      const puff = creature.puffAmount;
+      const baseSize = 15;
+      const puffSize = baseSize * (1 + puff * 0.8);
+      
+      ctx.fillStyle = '#f4d03f';
+      ctx.beginPath();
+      ctx.ellipse(pfx, pfy, puffSize, puffSize * (0.7 + puff * 0.3), 0, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#d4ac0d';
+      for (let i = 0; i < 6; i++) {
+        const spotAngle = (i / 6) * Math.PI * 2;
+        const spotR = puffSize * 0.6;
+        ctx.beginPath();
+        ctx.arc(pfx + Math.cos(spotAngle) * spotR, pfy + Math.sin(spotAngle) * spotR * 0.7, 3 + puff * 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      if (puff > 0.2) {
+        ctx.strokeStyle = '#c9a227';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 12; i++) {
+          const spikeAngle = (i / 12) * Math.PI * 2;
+          const spikeLen = puff * 8;
+          ctx.beginPath();
+          ctx.moveTo(
+            pfx + Math.cos(spikeAngle) * puffSize,
+            pfy + Math.sin(spikeAngle) * puffSize * 0.8
+          );
+          ctx.lineTo(
+            pfx + Math.cos(spikeAngle) * (puffSize + spikeLen),
+            pfy + Math.sin(spikeAngle) * (puffSize * 0.8 + spikeLen)
+          );
+          ctx.stroke();
+        }
+      }
+      
+      ctx.fillStyle = '#fef9e7';
+      ctx.beginPath();
+      ctx.ellipse(pfx, pfy + puffSize * 0.2, puffSize * 0.5, puffSize * 0.4, 0, 0, Math.PI);
+      ctx.fill();
+      
+      const tailWag = Math.sin(creature.finPhase) * 5;
+      ctx.fillStyle = '#f4d03f';
+      ctx.beginPath();
+      ctx.moveTo(pfx - pfdir * puffSize, pfy);
+      ctx.quadraticCurveTo(pfx - pfdir * (puffSize + 10), pfy + tailWag, pfx - pfdir * (puffSize + 15), pfy - 8 + tailWag);
+      ctx.quadraticCurveTo(pfx - pfdir * (puffSize + 8), pfy + tailWag, pfx - pfdir * (puffSize + 15), pfy + 8 + tailWag);
+      ctx.quadraticCurveTo(pfx - pfdir * (puffSize + 10), pfy + tailWag, pfx - pfdir * puffSize, pfy);
+      ctx.fill();
+      
+      const finFlap = Math.sin(creature.finPhase * 2) * 3;
+      ctx.beginPath();
+      ctx.ellipse(pfx, pfy - puffSize * 0.8 + finFlap, 5, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(pfx + pfdir * puffSize * 0.5, pfy + finFlap, 6, 4, pfdir * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(pfx + pfdir * puffSize * 0.5, pfy - puffSize * 0.2, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(pfx + pfdir * (puffSize * 0.5 + 1), pfy - puffSize * 0.2, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = '#c9a227';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(pfx + pfdir * puffSize * 0.7, pfy + puffSize * 0.1, 3, 0.2, Math.PI - 0.2);
+      ctx.stroke();
+      break;
+  }
+};
+
+// ============================================
+// LARRY THE OCTOPUS
+// ============================================
+
+const drawLarry = (ctx, x, y, scale = 1, velocity = 0, reachTarget = null) => {
+  const s = scale;
+  const time = Date.now() * 0.001;
+  ctx.save();
+  ctx.translate(x, y);
+  
+  const vDrag = Math.max(-1, Math.min(1, velocity / 8));
+  
+  ctx.fillStyle = '#e8788c';
+  ctx.beginPath();
+  ctx.ellipse(45*s, 25*s, 28*s, 30*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.beginPath();
+  ctx.ellipse(45*s, 50*s, 22*s, 10*s, 0, 0, Math.PI);
+  ctx.fill();
+  
+  ctx.fillStyle = '#f4a0aa';
+  ctx.beginPath();
+  ctx.ellipse(40*s, 12*s, 15*s, 10*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#f8b0b8';
+  ctx.beginPath();
+  ctx.ellipse(55*s, 8*s, 6*s, 4*s, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#d66a7a';
+  ctx.beginPath();
+  ctx.arc(28*s, 18*s, 3*s, 0, Math.PI * 2);
+  ctx.arc(58*s, 15*s, 2.5*s, 0, Math.PI * 2);
+  ctx.arc(65*s, 30*s, 2*s, 0, Math.PI * 2);
+  ctx.arc(22*s, 35*s, 2*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  const wiggleAmp1 = 28;
+  const wiggleAmp2 = 15;
+  const wiggleAmp3 = 8;
+  
+  let leftReachX = 0, leftReachY = 0;
+  let rightReachX = 0, rightReachY = 0;
+  
+  if (reachTarget) {
+    const extension = reachTarget.extension;
+    
+    const donutRelX = reachTarget.x - x - 45*s;
+    const donutRelY = reachTarget.y - y;
+    
+    const leftBaseX = 22*s - 45*s;
+    const leftBaseY = 45*s;
+    const rightBaseX = 68*s - 45*s;
+    const rightBaseY = 45*s;
+    
+    const leftToDonutX = donutRelX - leftBaseX;
+    const leftToDonutY = donutRelY - leftBaseY;
+    const rightToDonutX = donutRelX - rightBaseX;
+    const rightToDonutY = donutRelY - rightBaseY;
+    
+    const MAX_REACH = 90 * s;
+    
+    const leftDist = Math.hypot(leftToDonutX, leftToDonutY);
+    const rightDist = Math.hypot(rightToDonutX, rightToDonutY);
+    
+    if (leftDist < rightDist && leftDist > 0) {
+      let dirX = leftToDonutX / leftDist;
+      let dirY = leftToDonutY / leftDist;
+      
+      if (dirY > 0.5) dirY = 0.5;
+      
+      const len = Math.hypot(dirX, dirY);
+      if (len > 0) {
+        dirX /= len;
+        dirY /= len;
+      }
+      
+      leftReachX = dirX * MAX_REACH * extension;
+      leftReachY = dirY * MAX_REACH * extension;
+    } else if (rightDist > 0) {
+      let dirX = rightToDonutX / rightDist;
+      let dirY = rightToDonutY / rightDist;
+      
+      if (dirY > 0.5) dirY = 0.5;
+      
+      const len = Math.hypot(dirX, dirY);
+      if (len > 0) {
+        dirX /= len;
+        dirY /= len;
+      }
+      
+      rightReachX = dirX * MAX_REACH * extension;
+      rightReachY = dirY * MAX_REACH * extension;
+    }
+  }
+  
+  ctx.fillStyle = '#e8788c';
+  
+  const leftWave1 = Math.sin(time * 2.5) * wiggleAmp1 * s;
+  const leftWave2 = Math.sin(time * 5.5 + 0.8) * wiggleAmp2 * s;
+  const leftWave3 = Math.sin(time * 9 + 1.5) * wiggleAmp3 * s;
+  
+  const leftTipWiggle = leftWave1 + leftWave2 + leftWave3 + leftReachX;
+  const leftMidWiggle = leftWave1 * 0.6 + leftWave2 * 0.7 + leftReachX * 0.5;
+  const leftBaseWiggle = leftWave1 * 0.25;
+  const leftDrag = vDrag * 20 * s;
+  
+  const leftTipX = -5*s + leftTipWiggle + leftDrag;
+  const leftTipY = -35*s + leftReachY;
+  
+  ctx.beginPath();
+  ctx.moveTo(22*s + leftBaseWiggle, 45*s);
+  ctx.bezierCurveTo(
+    10*s + leftMidWiggle + leftDrag * 0.4, 20*s + leftReachY * 0.2,
+    0*s + leftTipWiggle * 0.7 + leftDrag * 0.7, -5*s + leftReachY * 0.4,
+    leftTipX, leftTipY
+  );
+  ctx.lineTo(leftTipX + 10*s, leftTipY + 4*s);
+  ctx.bezierCurveTo(
+    8*s + leftTipWiggle * 0.6 + leftDrag * 0.6, 0*s + leftReachY * 0.3,
+    18*s + leftMidWiggle * 0.8 + leftDrag * 0.3, 25*s,
+    30*s + leftBaseWiggle, 47*s
+  );
+  ctx.fill();
+  
+  ctx.fillStyle = '#f4a0aa';
+  ctx.beginPath();
+  ctx.arc(12*s + leftMidWiggle * 0.5 + leftDrag * 0.4, 12*s + leftReachY * 0.15, 4*s, 0, Math.PI * 2);
+  ctx.arc(6*s + leftTipWiggle * 0.7 + leftDrag * 0.6, -8*s + leftReachY * 0.3, 3*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#e8788c';
+  
+  const rightWave1 = Math.sin(time * 2.5 + 1.8) * wiggleAmp1 * s;
+  const rightWave2 = Math.sin(time * 5.5 + 2.5) * wiggleAmp2 * s;
+  const rightWave3 = Math.sin(time * 9 + 3.2) * wiggleAmp3 * s;
+  
+  const rightTipWiggle = rightWave1 + rightWave2 + rightWave3 + rightReachX;
+  const rightMidWiggle = rightWave1 * 0.6 + rightWave2 * 0.7 + rightReachX * 0.5;
+  const rightBaseWiggle = rightWave1 * 0.25;
+  const rightDrag = vDrag * 20 * s;
+  
+  const rightTipX = 95*s + rightTipWiggle + rightDrag;
+  const rightTipY = -35*s + rightReachY;
+  
+  ctx.beginPath();
+  ctx.moveTo(68*s + rightBaseWiggle, 45*s);
+  ctx.bezierCurveTo(
+    80*s + rightMidWiggle + rightDrag * 0.4, 20*s + rightReachY * 0.2,
+    90*s + rightTipWiggle * 0.7 + rightDrag * 0.7, -5*s + rightReachY * 0.4,
+    rightTipX, rightTipY
+  );
+  ctx.lineTo(rightTipX - 10*s, rightTipY + 4*s);
+  ctx.bezierCurveTo(
+    82*s + rightTipWiggle * 0.6 + rightDrag * 0.6, 0*s + rightReachY * 0.3,
+    72*s + rightMidWiggle * 0.8 + rightDrag * 0.3, 25*s,
+    60*s + rightBaseWiggle, 47*s
+  );
+  ctx.fill();
+  
+  ctx.fillStyle = '#f4a0aa';
+  ctx.beginPath();
+  ctx.arc(78*s + rightMidWiggle * 0.5 + rightDrag * 0.4, 12*s + rightReachY * 0.15, 4*s, 0, Math.PI * 2);
+  ctx.arc(84*s + rightTipWiggle * 0.7 + rightDrag * 0.6, -8*s + rightReachY * 0.3, 3*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  const lowerTentacles = [
+    { x: 20, baseY: 52, spread: -12, phase: 0 },
+    { x: 30, baseY: 55, spread: -5, phase: 0.9 },
+    { x: 40, baseY: 57, spread: 0, phase: 1.8 },
+    { x: 50, baseY: 55, spread: 5, phase: 2.7 },
+    { x: 60, baseY: 52, spread: 10, phase: 3.6 },
+    { x: 68, baseY: 50, spread: 15, phase: 4.5 },
+  ];
+  
+  lowerTentacles.forEach((tent, i) => {
+    const tentWave1 = Math.sin(time * 2.2 + tent.phase) * 20 * s;
+    const tentWave2 = Math.sin(time * 5 + tent.phase + 1) * 10 * s;
+    const tentWave3 = Math.sin(time * 8.5 + tent.phase + 2) * 5 * s;
+    const tentWiggle = tentWave1 + tentWave2 + tentWave3;
+    
+    const tentX = tent.x * s;
+    const tentY = tent.baseY * s;
+    const spread = tent.spread * s;
+    const lowerDrag = vDrag * 10 * s * (1 + i * 0.1);
+    
+    ctx.fillStyle = '#e8788c';
+    ctx.beginPath();
+    ctx.moveTo(tentX, tentY);
+    ctx.quadraticCurveTo(
+      tentX + spread * 0.5 + tentWiggle * 0.5 + lowerDrag * 0.4, tentY + 18*s,
+      tentX + spread + tentWiggle + lowerDrag, tentY + 38*s
+    );
+    ctx.lineTo(tentX + spread + tentWiggle + lowerDrag + 7*s, tentY + 38*s);
+    ctx.quadraticCurveTo(
+      tentX + spread * 0.5 + tentWiggle * 0.4 + lowerDrag * 0.3 + 7*s, tentY + 18*s,
+      tentX + 7*s, tentY
+    );
+    ctx.fill();
+    
+    ctx.fillStyle = '#f4a0aa';
+    ctx.beginPath();
+    ctx.arc(tentX + spread * 0.4 + tentWiggle * 0.4 + lowerDrag * 0.3 + 3.5*s, tentY + 20*s, 3*s, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.ellipse(33*s, 30*s, 10*s, 12*s, -0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(57*s, 30*s, 10*s, 12*s, 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  
+  const eyeShift = vDrag * 2 * s;
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.ellipse(35*s + eyeShift, 32*s, 5*s, 6*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(59*s + eyeShift, 32*s, 5*s, 6*s, 0, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(32*s + eyeShift, 28*s, 3*s, 0, Math.PI * 2);
+  ctx.arc(56*s + eyeShift, 28*s, 3*s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(37*s + eyeShift, 35*s, 1.5*s, 0, Math.PI * 2);
+  ctx.arc(61*s + eyeShift, 35*s, 1.5*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  // MONOCLE on right eye!
+  // Monocle chain (thicker, more visible)
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 2.5 * s;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(57*s + eyeShift + 12*s, 34*s);
+  ctx.quadraticCurveTo(72*s, 42*s, 75*s, 52*s);
+  ctx.quadraticCurveTo(76*s, 62*s, 70*s, 72*s);
+  ctx.lineTo(65*s, 82*s);
+  ctx.stroke();
+  
+  // Chain highlight for depth
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 1 * s;
+  ctx.beginPath();
+  ctx.moveTo(58*s + eyeShift + 12*s, 33*s);
+  ctx.quadraticCurveTo(73*s, 41*s, 76*s, 51*s);
+  ctx.stroke();
+  
+  // Small chain end detail (like a clip)
+  ctx.fillStyle = '#1a1a1a';
+  ctx.beginPath();
+  ctx.arc(65*s, 82*s, 3*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  // Monocle rim (black)
+  ctx.strokeStyle = '#0d0d0d';
+  ctx.lineWidth = 3 * s;
+  ctx.beginPath();
+  ctx.arc(57*s + eyeShift, 30*s, 13*s, 0, Math.PI * 2);
+  ctx.stroke();
+  
+  // Monocle rim highlight (subtle shine)
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1.2 * s;
+  ctx.beginPath();
+  ctx.arc(57*s + eyeShift, 30*s, 12*s, -0.6, 0.6);
+  ctx.stroke();
+  
+  // Monocle glass (subtle blue tint)
+  ctx.fillStyle = 'rgba(200, 230, 255, 0.15)';
+  ctx.beginPath();
+  ctx.arc(57*s + eyeShift, 30*s, 11*s, 0, Math.PI * 2);
+  ctx.fill();
+  
+  // Glass reflection
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.beginPath();
+  ctx.ellipse(53*s + eyeShift, 26*s, 4*s, 2*s, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.strokeStyle = '#c0606f';
+  ctx.lineWidth = 2.5 * s;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(45*s, 42*s, 7*s, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+  
+  ctx.fillStyle = '#f4a0aa';
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.ellipse(20*s, 38*s, 5*s, 3*s, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(70*s, 38*s, 5*s, 3*s, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  
+  ctx.restore();
+};
+
+const drawDonut = (ctx, x, y, size, rotation = 0) => {
+  ctx.save();
+  ctx.translate(x + size/2, y + size/2);
+  ctx.rotate(rotation);
+  
+  const r = size * 0.4;
+  
+  ctx.fillStyle = '#d4915c';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#1a3352';
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  
+  ctx.fillStyle = '#ffb6c1';
+  ctx.beginPath();
+  ctx.arc(0, -2, r * 0.85, Math.PI * 0.2, Math.PI * 0.8, true);
+  ctx.arc(0, -2, r * 0.4, Math.PI * 0.8, Math.PI * 0.2, false);
+  ctx.fill();
+  
+  const sprinkleColors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3'];
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const sr = r * 0.65;
+    const sx = Math.cos(angle) * sr;
+    const sy = Math.sin(angle) * sr - 2;
+    ctx.fillStyle = sprinkleColors[i % 4];
+    ctx.fillRect(sx - 2, sy - 1, 4, 2);
+  }
+  
+  ctx.restore();
+};
+
+// ============================================
+// MAIN GAME COMPONENT
+// ============================================
+
+function LarryTheOctopus() {
+  const canvasRef = useRef(null);
+  const [gameState, setGameState] = useState('menu');
+  const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [muted, setMuted] = useState(false);
+  
+  const gameRef = useRef({
+    larryX: GAME_WIDTH / 2 - LARRY_WIDTH / 2,
+    larryVX: 0,
+    prevLarryX: GAME_WIDTH / 2 - LARRY_WIDTH / 2,
+    donuts: [],
+    keys: { left: false, right: false },
+    lastSpawn: 0,
+    spawnInterval: 2000,
+    animationId: null,
+    score: 0,
+    lives: 3,
+    particles: [],
+    creatures: [],
+    lastCreatureSpawn: 0,
+    creatureSpawnInterval: 4000,
+    backgroundElements: null,
+    caughtDonuts: [],
+    nextTentacle: 0,
+    sandParticles: [],
+    reachingTentacle: 0,
+    lastSpawnX: GAME_WIDTH / 2,
+  });
+
+  const resetGame = useCallback(() => {
+    const game = gameRef.current;
+    game.larryX = GAME_WIDTH / 2 - LARRY_WIDTH / 2;
+    game.larryVX = 0;
+    game.prevLarryX = game.larryX;
+    game.donuts = [];
+    game.particles = [];
+    game.creatures = [];
+    game.caughtDonuts = [];
+    game.nextTentacle = 0;
+    game.sandParticles = [];
+    game.lastSpawn = Date.now();
+    game.lastCreatureSpawn = Date.now();
+    game.spawnInterval = 2000;
+    game.score = 0;
+    game.lives = 3;
+    game.lastSpawnX = GAME_WIDTH / 2;
+    if (!game.backgroundElements) {
+      game.backgroundElements = createBackgroundElements();
+    }
+    setScore(0);
+    setLives(3);
+  }, []);
+
+  const spawnDonut = useCallback(() => {
+    const game = gameRef.current;
+    const now = Date.now();
+    const adjustedInterval = Math.max(800, game.spawnInterval - game.score * 15);
+    
+    if (now - game.lastSpawn > adjustedInterval) {
+      const minX = DONUT_SIZE / 2;
+      const maxX = GAME_WIDTH - DONUT_SIZE * 1.5;
+      const spawnRange = maxX - minX;
+      
+      let newX;
+      const avoidRadius = 80;
+      const lastX = game.lastSpawnX;
+      
+      for (let attempt = 0; attempt < 5; attempt++) {
+        newX = minX + Math.random() * spawnRange;
+        
+        if (Math.random() < 0.4) {
+          if (lastX < GAME_WIDTH / 2) {
+            newX = GAME_WIDTH / 2 + Math.random() * (spawnRange / 2);
+          } else {
+            newX = minX + Math.random() * (spawnRange / 2);
+          }
+        }
+        
+        newX += (Math.random() - 0.5) * 40;
+        newX = Math.max(minX, Math.min(maxX, newX));
+        
+        if (Math.abs(newX - lastX) > avoidRadius) {
+          break;
+        }
+      }
+      
+      game.donuts.push({
+        x: newX,
+        y: -DONUT_SIZE,
+        speed: BASE_FALL_SPEED + Math.random() * 1.5 + game.score * 0.08,
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 0.08
+      });
+      
+      game.lastSpawnX = newX;
+      game.lastSpawn = now;
+    }
+  }, []);
+
+  const spawnCreature = useCallback(() => {
+    const game = gameRef.current;
+    const now = Date.now();
+    
+    if (now - game.lastCreatureSpawn > game.creatureSpawnInterval) {
+      const weights = [
+        { type: 'fish', weight: 30 },
+        { type: 'jellyfish', weight: 20 },
+        { type: 'crab', weight: 20 },
+        { type: 'turtle', weight: 15 },
+        { type: 'clam', weight: 12 },
+        { type: 'seahorse', weight: 10 },
+        { type: 'pufferfish', weight: 8 },
+        { type: 'shrimp', weight: 3 },
+      ];
+      
+      const totalWeight = weights.reduce((sum, w) => sum + w.weight, 0);
+      let random = Math.random() * totalWeight;
+      let type = 'fish';
+      
+      for (const w of weights) {
+        random -= w.weight;
+        if (random <= 0) {
+          type = w.type;
+          break;
+        }
+      }
+      
+      const sameTypeCount = game.creatures.filter(c => c.type === type).length;
+      const maxOfType = type === 'fish' ? 2 : (type === 'shrimp' || type === 'seahorse' || type === 'pufferfish') ? 1 : 2;
+      
+      if (sameTypeCount < maxOfType) {
+        const creature = createCreature(type);
+        if (creature) {
+          game.creatures.push(creature);
+        }
+      }
+      
+      game.lastCreatureSpawn = now;
+      game.creatureSpawnInterval = 3500 + Math.random() * 4000;
+    }
+  }, []);
+
+  const gameLoop = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const game = gameRef.current;
+    const time = Date.now();
+
+    if (!game.backgroundElements) {
+      game.backgroundElements = createBackgroundElements();
+    }
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    gradient.addColorStop(0, '#4a8caf');
+    gradient.addColorStop(0.2, '#3d7a9b');
+    gradient.addColorStop(0.5, '#2a5a7b');
+    gradient.addColorStop(0.8, '#1a3a55');
+    gradient.addColorStop(1, '#0d1f33');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    ctx.globalAlpha = 0.08;
+    for (let i = 0; i < 25; i++) {
+      const cx = (Math.sin(time * 0.0008 + i * 0.5) * 0.5 + 0.5) * GAME_WIDTH;
+      const cy = (i / 25) * GAME_HEIGHT * 0.5;
+      ctx.fillStyle = '#87ceeb';
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 25 + Math.sin(time * 0.002 + i) * 12, 4, Math.sin(time * 0.001) * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    drawBackgroundElements(ctx, game.backgroundElements, time);
+
+    ctx.fillStyle = '#1a5c3a';
+    for (let i = 0; i < 6; i++) {
+      const swx = 40 + i * 85;
+      const sway = Math.sin(time * 0.0015 + i * 0.7) * 12;
+      const height = 80 + (i % 3) * 30;
+      ctx.beginPath();
+      ctx.moveTo(swx, GAME_HEIGHT - 25);
+      ctx.quadraticCurveTo(swx + sway, GAME_HEIGHT - 25 - height * 0.6, swx + sway * 0.7, GAME_HEIGHT - 25 - height);
+      ctx.quadraticCurveTo(swx + sway * 0.5, GAME_HEIGHT - 25 - height * 0.6, swx + 8, GAME_HEIGHT - 25);
+      ctx.fill();
+    }
+
+    const prevX = game.larryX;
+    if (game.keys.left && game.larryX > 0) {
+      game.larryX = Math.max(0, game.larryX - LARRY_SPEED);
+    }
+    if (game.keys.right && game.larryX < GAME_WIDTH - LARRY_WIDTH) {
+      game.larryX = Math.min(GAME_WIDTH - LARRY_WIDTH, game.larryX + LARRY_SPEED);
+    }
+    
+    const newVelocity = game.larryX - prevX;
+    game.larryVX = game.larryVX * 0.7 + newVelocity * 0.3;
+    
+    if (Math.abs(game.larryVX) > 1 && Math.random() < 0.4) {
+      game.sandParticles.push({
+        x: game.larryX + LARRY_WIDTH / 2 + (Math.random() - 0.5) * 30,
+        y: GAME_HEIGHT - 35,
+        vx: -game.larryVX * 0.3 + (Math.random() - 0.5) * 2,
+        vy: -1 - Math.random() * 2,
+        size: 2 + Math.random() * 3,
+        life: 1,
+        color: '#a08060',
+      });
+    }
+
+    spawnDonut();
+    spawnCreature();
+
+    game.creatures = game.creatures.filter(creature => {
+      const alive = updateCreature(creature, time);
+      if (alive) drawCreature(ctx, creature, time);
+      return alive;
+    });
+
+    game.donuts = game.donuts.filter(donut => {
+      donut.y += donut.speed;
+      donut.rotation += donut.rotationSpeed;
+
+      const larryCenter = { x: game.larryX + LARRY_WIDTH / 2, y: GAME_HEIGHT - 120 };
+      const donutCenter = { x: donut.x + DONUT_SIZE / 2, y: donut.y + DONUT_SIZE / 2 };
+      const dist = Math.hypot(larryCenter.x - donutCenter.x, larryCenter.y - donutCenter.y);
+
+      if (dist < (LARRY_WIDTH / 2 + DONUT_SIZE / 2) * 0.86) {
+        game.score++;
+        setScore(game.score);
+        playCatchSound();
+        
+        // Create happy particles! Hearts, stars, and sparkles
+        const px = donut.x + DONUT_SIZE / 2;
+        const py = donut.y + DONUT_SIZE / 2;
+        
+        // Hearts
+        for (let i = 0; i < 4; i++) {
+          game.particles.push({
+            type: 'heart',
+            x: px + (Math.random() - 0.5) * 30,
+            y: py + (Math.random() - 0.5) * 20,
+            vx: (Math.random() - 0.5) * 3,
+            vy: -2 - Math.random() * 2,
+            life: 1,
+            size: 8 + Math.random() * 6,
+            color: ['#ff6b9d', '#ff8fab', '#ffb3c6'][Math.floor(Math.random() * 3)],
+            rotation: (Math.random() - 0.5) * 0.5,
+          });
+        }
+        
+        // Stars
+        for (let i = 0; i < 5; i++) {
+          game.particles.push({
+            type: 'star',
+            x: px + (Math.random() - 0.5) * 40,
+            y: py + (Math.random() - 0.5) * 30,
+            vx: (Math.random() - 0.5) * 4,
+            vy: -1.5 - Math.random() * 2.5,
+            life: 1,
+            size: 6 + Math.random() * 5,
+            color: ['#ffd700', '#ffec8b', '#fff8dc', '#ffe66d'][Math.floor(Math.random() * 4)],
+            rotation: Math.random() * Math.PI * 2,
+            rotSpeed: (Math.random() - 0.5) * 0.3,
+          });
+        }
+        
+        // Sparkle dots
+        for (let i = 0; i < 8; i++) {
+          game.particles.push({
+            type: 'sparkle',
+            x: px + (Math.random() - 0.5) * 50,
+            y: py + (Math.random() - 0.5) * 40,
+            vx: (Math.random() - 0.5) * 2,
+            vy: -1 - Math.random() * 1.5,
+            life: 1,
+            size: 3 + Math.random() * 3,
+            color: ['#fff', '#ffe4ec', '#e0f7ff', '#fff5ba'][Math.floor(Math.random() * 4)],
+          });
+        }
+        
+        const tentacle = game.reachingTentacle !== undefined ? game.reachingTentacle : 0;
+        
+        const onThisTentacle = game.caughtDonuts.filter(d => d.tentacle === tentacle && d.settled).length;
+        
+        game.caughtDonuts.push({
+          tentacle: tentacle,
+          slot: onThisTentacle,
+          startX: donut.x + DONUT_SIZE / 2,
+          startY: donut.y + DONUT_SIZE / 2,
+          progress: 0,
+          settled: false,
+          rotation: donut.rotation,
+          size: DONUT_SIZE * 0.6,
+          age: 0,
+        });
+        
+        return false;
+      }
+
+      if (donut.y > GAME_HEIGHT) {
+        game.lives--;
+        setLives(game.lives);
+        playMissSound();
+        if (game.lives <= 0) {
+          if (game.animationId) {
+            cancelAnimationFrame(game.animationId);
+            game.animationId = null;
+          }
+          setHighScore(prev => Math.max(prev, game.score));
+          stopMusic();
+          playGameOverSound();
+          setGameState('gameover');
+        }
+        return false;
+      }
+
+      drawDonut(ctx, donut.x, donut.y, DONUT_SIZE, donut.rotation);
+      return true;
+    });
+
+    game.particles = game.particles.filter(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      
+      // Different physics for different particle types
+      if (p.type === 'heart') {
+        p.vy += 0.02; // Gentle float up then down
+        p.vx *= 0.98;
+      } else if (p.type === 'star') {
+        p.vy += 0.05;
+        p.rotation = (p.rotation || 0) + (p.rotSpeed || 0.1);
+      } else if (p.type === 'sparkle') {
+        p.vy += 0.01; // Very gentle
+        p.vx *= 0.99;
+      } else {
+        p.vy += 0.2; // Default physics
+      }
+      
+      p.life -= 0.015;
+      if (p.life <= 0) return false;
+      
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      
+      if (p.type === 'heart') {
+        // Draw a heart shape
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rotation || 0);
+        ctx.scale(p.life, p.life);
+        ctx.beginPath();
+        const hs = p.size;
+        ctx.moveTo(0, hs * 0.3);
+        ctx.bezierCurveTo(-hs * 0.5, -hs * 0.3, -hs, hs * 0.1, 0, hs);
+        ctx.bezierCurveTo(hs, hs * 0.1, hs * 0.5, -hs * 0.3, 0, hs * 0.3);
+        ctx.fill();
+        ctx.restore();
+      } else if (p.type === 'star') {
+        // Draw a 5-pointed star
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rotation || 0);
+        ctx.scale(p.life, p.life);
+        ctx.beginPath();
+        const spikes = 5;
+        const outerR = p.size;
+        const innerR = p.size * 0.4;
+        for (let i = 0; i < spikes * 2; i++) {
+          const r = i % 2 === 0 ? outerR : innerR;
+          const angle = (i * Math.PI / spikes) - Math.PI / 2;
+          if (i === 0) ctx.moveTo(Math.cos(angle) * r, Math.sin(angle) * r);
+          else ctx.lineTo(Math.cos(angle) * r, Math.sin(angle) * r);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else if (p.type === 'sparkle') {
+        // Simple glowing dot
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+        // Add glow
+        ctx.globalAlpha = p.life * 0.3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life * 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // Default circle particle
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      ctx.globalAlpha = 1;
+      return true;
+    });
+
+    ctx.fillStyle = '#8b7355';
+    ctx.fillRect(0, GAME_HEIGHT - 30, GAME_WIDTH, 30);
+    
+    ctx.fillStyle = '#a08060';
+    for (let i = 0; i < GAME_WIDTH; i += 5) {
+      const h = 2 + Math.sin(i * 0.15 + time * 0.001) * 1.5;
+      ctx.fillRect(i, GAME_HEIGHT - 30 + Math.sin(i * 0.1) * 2, 3, h);
+    }
+    
+    ctx.fillStyle = '#6b5344';
+    ctx.beginPath();
+    ctx.ellipse(80, GAME_HEIGHT - 20, 12, 6, 0.2, 0, Math.PI * 2);
+    ctx.ellipse(250, GAME_HEIGHT - 18, 8, 5, -0.1, 0, Math.PI * 2);
+    ctx.ellipse(420, GAME_HEIGHT - 22, 15, 7, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    game.sandParticles = game.sandParticles.filter(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.15;
+      p.life -= 0.025;
+      
+      if (p.life <= 0) return false;
+      
+      ctx.globalAlpha = p.life * 0.6;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      
+      return true;
+    });
+
+    let reachTarget = null;
+    let reachingTentacle = 0;
+    const larryCenterX = game.larryX + LARRY_WIDTH / 2;
+    
+    const collisionY = GAME_HEIGHT - 120;
+    
+    let bestDonut = null;
+    let bestScore = -1;
+    
+    const REACH_HEIGHT = 150;
+    const HORIZONTAL_RANGE = LARRY_WIDTH * 1.5;
+    
+    game.donuts.forEach(donut => {
+      const donutCenterX = donut.x + DONUT_SIZE / 2;
+      const donutCenterY = donut.y + DONUT_SIZE / 2;
+      
+      const aboveCollision = collisionY - donutCenterY;
+      
+      const horizontalDist = Math.abs(larryCenterX - donutCenterX);
+      
+      if (aboveCollision > -30 && aboveCollision < REACH_HEIGHT && horizontalDist < HORIZONTAL_RANGE) {
+        const verticalProgress = 1 - (Math.max(0, aboveCollision) / REACH_HEIGHT);
+        const horizontalPenalty = horizontalDist / HORIZONTAL_RANGE;
+        const score = verticalProgress * (1 - horizontalPenalty * 0.3);
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestDonut = { 
+            x: donutCenterX, 
+            y: donutCenterY, 
+            aboveCollision
+          };
+        }
+      }
+    });
+    
+    if (bestDonut) {
+      const normalizedAbove = Math.max(0, bestDonut.aboveCollision) / REACH_HEIGHT;
+      
+      const extension = 0.2 + (1 - normalizedAbove) * 0.8;
+      
+      const larryDrawX = game.larryX;
+      const leftTentacleX = larryDrawX + 22;
+      const rightTentacleX = larryDrawX + 68;
+      
+      const leftDist = Math.abs(bestDonut.x - leftTentacleX);
+      const rightDist = Math.abs(bestDonut.x - rightTentacleX);
+      
+      reachingTentacle = leftDist < rightDist ? 0 : 1;
+      
+      reachTarget = {
+        x: bestDonut.x,
+        y: bestDonut.y,
+        extension: extension
+      };
+    }
+    
+    game.reachingTentacle = reachingTentacle;
+
+    drawLarry(ctx, game.larryX, GAME_HEIGHT - LARRY_HEIGHT - 20, 1, game.larryVX, reachTarget);
+
+    const tentacleTime = time * 0.001;
+    
+    const leftWave1 = Math.sin(tentacleTime * 2.5) * 28;
+    const leftWave2 = Math.sin(tentacleTime * 5.5 + 0.8) * 15;
+    const leftWave3 = Math.sin(tentacleTime * 9 + 1.5) * 8;
+    const leftTipWiggle = leftWave1 + leftWave2 + leftWave3;
+    
+    const rightWave1 = Math.sin(tentacleTime * 2.5 + 1.8) * 28;
+    const rightWave2 = Math.sin(tentacleTime * 5.5 + 2.5) * 15;
+    const rightWave3 = Math.sin(tentacleTime * 9 + 3.2) * 8;
+    const rightTipWiggle = rightWave1 + rightWave2 + rightWave3;
+    
+    const vDrag = Math.max(-1, Math.min(1, game.larryVX / 8)) * 20;
+    
+    const larryDrawX = game.larryX;
+    const larryDrawY = GAME_HEIGHT - LARRY_HEIGHT - 20;
+    
+    const leftTipX = larryDrawX - 5 + leftTipWiggle + vDrag;
+    const leftTipY = larryDrawY - 35;
+    const rightTipX = larryDrawX + 95 + rightTipWiggle + vDrag;
+    const rightTipY = larryDrawY - 35;
+    
+    game.caughtDonuts = game.caughtDonuts.filter(caught => {
+      if (!caught.settled) {
+        caught.progress += 0.08;
+        if (caught.progress >= 1) {
+          caught.progress = 1;
+          caught.settled = true;
+        }
+      } else {
+        caught.age++;
+        if (caught.age > 300) return false;
+      }
+      
+      const tipX = caught.tentacle === 0 ? leftTipX : rightTipX;
+      const tipY = caught.tentacle === 0 ? leftTipY : rightTipY;
+      
+      const slotOffset = caught.slot * 18;
+      const targetX = tipX + (caught.tentacle === 0 ? slotOffset * 0.3 : -slotOffset * 0.3);
+      const targetY = tipY + slotOffset;
+      
+      const currentX = caught.startX + (targetX - caught.startX) * easeOutBack(caught.progress);
+      const currentY = caught.startY + (targetY - caught.startY) * easeOutBack(caught.progress);
+      
+      const wobbleX = caught.settled ? Math.sin(tentacleTime * 2 + caught.slot) * 2 : 0;
+      const wobbleY = caught.settled ? Math.cos(tentacleTime * 2 + caught.slot) * 1 : 0;
+      
+      const fadeOut = caught.age > 250 ? 1 - (caught.age - 250) / 50 : 1;
+      ctx.globalAlpha = fadeOut;
+      drawDonut(ctx, currentX - caught.size/2 + wobbleX, currentY - caught.size/2 + wobbleY, caught.size, caught.rotation + tentacleTime * 0.5);
+      ctx.globalAlpha = 1;
+      
+      return true;
+    });
+
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.roundRect(8, 8, 120, 32, 8);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.roundRect(GAME_WIDTH - 95, 8, 87, 32, 8);
+    ctx.fill();
+    
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${game.score}`, 18, 30);
+    
+    ctx.textAlign = 'right';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('🍩'.repeat(game.lives), GAME_WIDTH - 15, 30);
+
+    if (Math.random() < 0.003) {
+      playBubbleSound();
+    }
+
+    if (gameState === 'playing') {
+      game.animationId = requestAnimationFrame(gameLoop);
+    }
+  }, [gameState, spawnDonut, spawnCreature]);
+
+  useEffect(() => {
+    if (gameState === 'playing') {
+      resetGame();
+      gameRef.current.animationId = requestAnimationFrame(gameLoop);
+    }
+    return () => {
+      if (gameRef.current.animationId) {
+        cancelAnimationFrame(gameRef.current.animationId);
+      }
+    };
+  }, [gameState, gameLoop, resetGame]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        gameRef.current.keys.left = true;
+      }
+      if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+        e.preventDefault();
+        gameRef.current.keys.right = true;
+      }
+      if ((e.key === ' ' || e.key === 'Enter') && gameState !== 'playing') {
+        initAudio().then(() => {
+          startMusic();
+          playStartSound();
+        });
+        setGameState('playing');
+      }
+    };
+    const handleKeyUp = (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') gameRef.current.keys.left = false;
+      if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') gameRef.current.keys.right = false;
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [gameState]);
+
+  const handleTouchStart = useCallback((e) => {
+    if (gameState !== 'playing') {
+      initAudio().then(() => {
+        startMusic();
+        playStartSound();
+      });
+      setGameState('playing');
+      return;
+    }
+    e.preventDefault();
+    const touch = e.touches[0];
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (touch.clientX - rect.left) * (GAME_WIDTH / rect.width);
+    gameRef.current.larryX = Math.max(0, Math.min(GAME_WIDTH - LARRY_WIDTH, x - LARRY_WIDTH / 2));
+  }, [gameState]);
+
+  const handleTouchMove = useCallback((e) => {
+    if (gameState !== 'playing') return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (touch.clientX - rect.left) * (GAME_WIDTH / rect.width);
+    gameRef.current.larryX = Math.max(0, Math.min(GAME_WIDTH - LARRY_WIDTH, x - LARRY_WIDTH / 2));
+  }, [gameState]);
+
+  useEffect(() => {
+    if (gameState === 'menu') {
+      const game = gameRef.current;
+      if (!game.backgroundElements) {
+        game.backgroundElements = createBackgroundElements();
+      }
+      
+      let animId;
+      const drawMenu = () => {
+        const canvas = canvasRef.current;
+        if (!canvas || gameState !== 'menu') return;
+        const ctx = canvas.getContext('2d');
+        const time = Date.now();
+        
+        const gradient = ctx.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+        gradient.addColorStop(0, '#4a8caf');
+        gradient.addColorStop(1, '#0d1f33');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        
+        drawBackgroundElements(ctx, game.backgroundElements, time);
+        drawLarry(ctx, GAME_WIDTH/2 - 45, GAME_HEIGHT/2 + 40, 1.4);
+        
+        drawDonut(ctx, 80, 180, 50, Math.sin(time * 0.001) * 0.3);
+        drawDonut(ctx, 350, 140, 45, Math.sin(time * 0.001 + 1) * 0.3);
+        drawDonut(ctx, 200, 90, 40, Math.sin(time * 0.001 + 2) * 0.3);
+        
+        animId = requestAnimationFrame(drawMenu);
+      };
+      
+      drawMenu();
+      return () => cancelAnimationFrame(animId);
+    }
+  }, [gameState]);
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-b from-slate-800 to-slate-900 p-4 select-none">
+      <h1 
+        className="text-2xl sm:text-3xl font-bold text-pink-400 mb-4 text-center"
+        style={{ fontFamily: 'monospace', textShadow: '2px 2px 4px rgba(0,0,0,0.5)' }}
+      >
+        🐙 Larry The Octopus 🍩
+      </h1>
+      
+      <div className="relative">
+        <canvas
+          ref={canvasRef}
+          width={GAME_WIDTH}
+          height={GAME_HEIGHT}
+          className="border-4 border-pink-500 rounded-lg shadow-2xl"
+          style={{ 
+            maxWidth: '100%', 
+            maxHeight: '70vh',
+            touchAction: 'none',
+            WebkitTouchCallout: 'none',
+            WebkitUserSelect: 'none',
+            userSelect: 'none',
+          }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+        />
+
+        {gameState === 'menu' && (
+          <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center rounded-lg backdrop-blur-sm">
+            <h2 className="text-3xl text-white mb-2 font-bold">Larry The Octopus</h2>
+            <p className="text-pink-300 mb-4 text-center px-6">
+              Help Larry catch all the yummy donuts!
+            </p>
+            <p className="text-gray-400 text-sm mb-6 text-center px-4">
+              ← → Arrow Keys, A/D, or Touch to move
+            </p>
+            <button
+              onClick={() => {
+                initAudio().then(() => {
+                  startMusic();
+                  playStartSound();
+                });
+                setGameState('playing');
+              }}
+              className="px-8 py-4 bg-pink-500 hover:bg-pink-400 active:bg-pink-600 text-white font-bold rounded-xl text-xl transition-all shadow-lg"
+            >
+              🎮 START GAME
+            </button>
+            <p className="text-gray-500 text-xs mt-4">Tap or press SPACE</p>
+          </div>
+        )}
+
+        {gameState === 'gameover' && (
+          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center rounded-lg">
+            <div className="text-6xl mb-4">🐙💔</div>
+            <h2 className="text-3xl text-red-400 mb-4 font-bold">Game Over!</h2>
+            <p className="text-white text-2xl mb-2">Score: {score} 🍩</p>
+            {score === highScore && score > 0 && (
+              <p className="text-yellow-300 text-lg mb-2 animate-pulse">🎉 New High Score! 🎉</p>
+            )}
+            <p className="text-yellow-400 mb-6">Best: {highScore}</p>
+            <button
+              onClick={() => {
+                initAudio().then(() => {
+                  startMusic();
+                  playStartSound();
+                });
+                setGameState('playing');
+              }}
+              className="px-8 py-4 bg-pink-500 hover:bg-pink-400 active:bg-pink-600 text-white font-bold rounded-xl text-xl transition-all shadow-lg"
+            >
+              🔄 PLAY AGAIN
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-2 flex justify-center">
+        <button
+          onClick={() => {
+            const newMuted = !muted;
+            setMuted(newMuted);
+            setMasterMute(newMuted);
+          }}
+          className="px-4 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-600 text-sm font-bold transition-colors"
+        >
+          {muted ? '🔇 Unmute' : '🔊 Mute'}
+        </button>
+      </div>
+
+      <div className="mt-4 flex gap-4">
+        <button
+          className="px-8 py-4 bg-slate-700 text-white rounded-xl hover:bg-slate-600 active:bg-pink-600 text-lg font-bold select-none transition-colors touch-none"
+          onMouseDown={() => gameRef.current.keys.left = true}
+          onMouseUp={() => gameRef.current.keys.left = false}
+          onMouseLeave={() => gameRef.current.keys.left = false}
+          onTouchStart={(e) => { e.preventDefault(); gameRef.current.keys.left = true; }}
+          onTouchEnd={(e) => { e.preventDefault(); gameRef.current.keys.left = false; }}
+          onTouchCancel={(e) => { e.preventDefault(); gameRef.current.keys.left = false; }}
+        >
+          ⬅️ Left
+        </button>
+        <button
+          className="px-8 py-4 bg-slate-700 text-white rounded-xl hover:bg-slate-600 active:bg-pink-600 text-lg font-bold select-none transition-colors touch-none"
+          onMouseDown={() => gameRef.current.keys.right = true}
+          onMouseUp={() => gameRef.current.keys.right = false}
+          onMouseLeave={() => gameRef.current.keys.right = false}
+          onTouchStart={(e) => { e.preventDefault(); gameRef.current.keys.right = true; }}
+          onTouchEnd={(e) => { e.preventDefault(); gameRef.current.keys.right = false; }}
+          onTouchCancel={(e) => { e.preventDefault(); gameRef.current.keys.right = false; }}
+        >
+          Right ➡️
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Render the app
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<LarryTheOctopus />);
+  </script>
+</body>
+</html>
