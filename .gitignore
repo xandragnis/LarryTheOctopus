@@ -1,0 +1,9 @@
+# Browser-test artifacts (Playwright MCP)
+.playwright-mcp/
+
+# Node build tooling (standalone build pipeline)
+node_modules/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
