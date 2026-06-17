@@ -35,8 +35,12 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   
-  <!-- Babel for JSX -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Babel for JSX — PIN to v7. Babel 8 makes preset-react default to the
+       automatic runtime, which emits `import {jsx} from "react/jsx-runtime"`.
+       Babel injects that as a classic <script>, the browser throws
+       "Cannot use import statement outside a module", and the page goes blank.
+       Do NOT remove the version pin. See BUGS_FIXED.md (2026-06-17). -->
+  <script src="https://unpkg.com/@babel/standalone@7.29.7/babel.min.js"></script>
   
   <!-- Tone.js for audio -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
